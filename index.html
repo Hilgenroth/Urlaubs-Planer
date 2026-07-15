@@ -457,9 +457,10 @@
 
         <div class="settings-section">
           <h3>Mitarbeiterverwaltung</h3>
+          <div class="note" style="margin-bottom:10px;">Wenn du hier die E-Mail-Adresse eines Mitarbeiters einträgst, wird er beim Login automatisch erkannt und muss seinen Namen nicht mehr auswählen.</div>
           <div class="table-scroll">
           <table>
-            <thead><tr><th>Name</th><th>Standort</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Standort</th><th>E-Mail (Auto-Login)</th><th></th></tr></thead>
             <tbody id="einstellungenMitarbeiterBody"></tbody>
           </table>
           </div>
@@ -471,6 +472,7 @@
                 <option value="RH Hellefeld">RH Hellefeld</option>
               </select>
             </div>
+            <div><label>E-Mail (optional)</label><input type="email" id="neuerMaEmail" placeholder="name@rudolf-hilgenroth.de"></div>
             <div style="flex:0;"><button class="btn-primary" onclick="mitarbeiterHinzufuegen()">Hinzufügen</button></div>
           </div>
           <div id="mitarbeiterListeNote" class="note hidden"></div>
@@ -816,7 +818,17 @@ async function ladeProfil(uid){
       currentProfile = profilSnap.val();
       zeigeApp();
     } else {
-      zeigeOnboarding();
+      // Auto-Zuweisung: Wenn die Login-E-Mail in mitarbeiterListe hinterlegt ist,
+      // Namen direkt uebernehmen und Onboarding ueberspringen.
+      const emailLower = (currentUser.email||'').trim().toLowerCase();
+      const zugewiesen = MITARBEITER.find(m => (m.email||'').toLowerCase() === emailLower);
+      if(zugewiesen){
+        currentProfile = {name: zugewiesen.name, standort: zugewiesen.standort, email: currentUser.email};
+        try{ await db.ref('mitarbeiterZuordnung/'+uid).set(currentProfile); }catch(e){}
+        zeigeApp();
+      } else {
+        zeigeOnboarding();
+      }
     }
   }catch(err){
     console.error(err);
@@ -1359,19 +1371,31 @@ function renderMitarbeiterEditor(){
   const body = document.getElementById('einstellungenMitarbeiterBody');
   if(!body) return;
   body.innerHTML = '';
-  MITARBEITER.forEach(m=>{
+  MITARBEITER.forEach((m,idx)=>{
     const tr = document.createElement('tr');
+    const idSafe = 'ma_'+idx;
+    const nameEsc = m.name.replace(/'/g,"\\'");
+    const standortEsc = m.standort.replace(/'/g,"\\'");
+    const emailVal = (m.email || '').replace(/"/g,'&quot;');
     const loeschBtn = m._key ? '<button class="btn-danger btn-small" onclick="mitarbeiterLoeschen(\''+m._key+'\')">Entfernen</button>' : '<span class="note" style="margin:0;">Standardliste</span>';
-    tr.innerHTML = '<td>'+m.name+'</td><td>'+m.standort+'</td><td>'+loeschBtn+'</td>';
+    const keyArg = m._key ? "'"+m._key+"'" : 'null';
+    tr.innerHTML =
+      '<td>'+m.name+'</td>'+
+      '<td>'+m.standort+'</td>'+
+      '<td><input type="email" id="mailInput_'+idSafe+'" value="'+emailVal+'" placeholder="name@rudolf-hilgenroth.de" style="font-size:13px;"></td>'+
+      '<td>'+
+        '<button class="btn-primary btn-small" onclick="mitarbeiterEmailSpeichern(\''+idSafe+'\',\''+nameEsc+'\',\''+standortEsc+'\','+keyArg+')">E-Mail speichern</button> '+
+        loeschBtn+
+      '</td>';
     body.appendChild(tr);
   });
 }
 async function mitarbeiterHinzufuegen(){
   const name = document.getElementById('neuerMaName').value.trim();
   const standort = document.getElementById('neuerMaStandort').value;
+  const email = document.getElementById('neuerMaEmail').value.trim().toLowerCase();
   if(!name){ alert('Bitte einen Namen eingeben.'); return; }
   try{
-    // Falls noch keine Liste in Firebase existiert: aktuelle Fallback-Liste zuerst uebernehmen
     const snap = await db.ref('mitarbeiterListe').get();
     if(!snap.exists()){
       const updates = {};
@@ -1381,8 +1405,38 @@ async function mitarbeiterHinzufuegen(){
       });
       await db.ref('mitarbeiterListe').set(updates);
     }
-    await db.ref('mitarbeiterListe').push({name, standort});
+    const eintrag = {name, standort};
+    if(email) eintrag.email = email;
+    await db.ref('mitarbeiterListe').push(eintrag);
     document.getElementById('neuerMaName').value = '';
+    document.getElementById('neuerMaEmail').value = '';
+  }catch(err){
+    alert('Fehler: '+err.message);
+  }
+}
+async function mitarbeiterEmailSpeichern(idSafe, name, standort, key){
+  const email = document.getElementById('mailInput_'+idSafe).value.trim().toLowerCase();
+  try{
+    let effKey = key;
+    // Falls noch keine Firebase-Liste existiert: Fallback initial hochladen und Key des passenden Eintrags merken
+    if(!effKey){
+      const snap = await db.ref('mitarbeiterListe').get();
+      if(!snap.exists()){
+        const updates = {};
+        MITARBEITER_FALLBACK.forEach(m=>{
+          const k = db.ref('mitarbeiterListe').push().key;
+          updates[k] = m;
+          if(m.name===name && m.standort===standort) effKey = k;
+        });
+        await db.ref('mitarbeiterListe').set(updates);
+      }
+    }
+    if(!effKey){ alert('Konnte Mitarbeiter-Eintrag nicht finden.'); return; }
+    if(email){
+      await db.ref('mitarbeiterListe/'+effKey+'/email').set(email);
+    } else {
+      await db.ref('mitarbeiterListe/'+effKey+'/email').remove();
+    }
   }catch(err){
     alert('Fehler: '+err.message);
   }
